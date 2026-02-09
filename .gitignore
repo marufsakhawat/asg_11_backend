@@ -3,3 +3,4 @@ node_modules
 firebase-adminsdk.json
 .DS_Store
 .vercel
+firebase-service-account.json
