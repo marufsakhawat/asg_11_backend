@@ -24,7 +24,7 @@ admin.initializeApp({
 app.use(
   cors({
     origin: [
-      // "https://contesthub-contest-platform.netlify.app",
+      // "https://contesthub.app",
       "http://localhost:5173",
     ],
     credentials: true,
