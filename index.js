@@ -21,16 +21,13 @@ admin.initializeApp({
 });
 
 // Middlewares
-app.use(
-  cors({
-    origin: [
-      "https://asg011client.netlify.app/"
-      "http://localhost:5173",
-    ],
-    credentials: true,
-  })
-);
-app.use(express.json());
+app.use(cors({
+  origin: [
+    "http://localhost:5173",
+    "https://asg011client.netlify.app/"
+  ],
+  credentials: true
+}));
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@ms110.97wej2n.mongodb.net/?appName=ms110`;
 
