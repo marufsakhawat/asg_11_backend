@@ -21,7 +21,7 @@ admin.initializeApp({
 });
 
 // Middlewares
-app.use(cors());
+
 
 // app.use(cors({
 //   origin: [
@@ -30,6 +30,7 @@ app.use(cors());
 //   ],
 //   credentials: true
 // }));
+app.use(cors());
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@ms110.97wej2n.mongodb.net/?appName=ms110`;
 
