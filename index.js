@@ -24,7 +24,7 @@ admin.initializeApp({
 app.use(cors({
   origin: [
     "http://localhost:5173",
-    "https://asg011client.netlify.app/"
+    "https://asg011client.netlify.app"
   ],
   credentials: true
 }));
