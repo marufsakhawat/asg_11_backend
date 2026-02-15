@@ -41,7 +41,6 @@ let db, usersCollection, contestsCollection, participantsCollection, paymentsCol
 
 /**
  * DATABASE CONNECTION HELPER
- * Ensures the connection is active before performing any operation
  */
 async function connectDB() {
     if (!db) {
@@ -57,7 +56,6 @@ async function connectDB() {
 
 /**
  * GLOBAL DATABASE CONNECTION MIDDLEWARE
- * Triggers database connection on every incoming request
  */
 app.use(async (req, res, next) => {
     try {
@@ -107,12 +105,11 @@ const verifyCreator = async (req, res, next) => {
  * --- ROUTES ---
  */
 
-// API Status Check
 app.get("/", (req, res) => {
     res.send("ContestHub API is running!");
 });
 
-// User Onboarding: Create or existing user check
+// User Onboarding
 app.post("/users", async (req, res) => {
     const user = req.body;
     const existingUser = await usersCollection.findOne({ email: user.email });
@@ -124,7 +121,7 @@ app.post("/users", async (req, res) => {
     res.send(result);
 });
 
-// Admin: Get all users with search and pagination
+// Admin: Get all users
 app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
     const searchText = req.query.searchText || "";
     const page = parseInt(req.query.page) || 1;
@@ -140,13 +137,12 @@ app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
     res.send({ users, totalPages: Math.ceil(total / limit), totalUsers: total });
 });
 
-// Get user role by email
 app.get("/users/:email/role", verifyToken, async (req, res) => {
     const user = await usersCollection.findOne({ email: req.params.email });
     res.send({ role: user?.role || "user" });
 });
 
-// Public: Get approved contests with filter and search
+// Public Contest Routes
 app.get("/contests", async (req, res) => {
     const { type, search } = req.query;
     let query = { status: "approved" };
@@ -156,13 +152,11 @@ app.get("/contests", async (req, res) => {
     res.send(result);
 });
 
-// Public: Get popular contests based on participation
 app.get("/contests/popular", async (req, res) => {
     const result = await contestsCollection.find({ status: "approved" }).sort({ participantsCount: -1 }).limit(6).toArray();
     res.send(result);
 });
 
-// Public: Get single contest details
 app.get("/contests/:id", async (req, res) => {
     const result = await contestsCollection.findOne({ _id: new ObjectId(req.params.id) });
     res.send(result);
@@ -178,7 +172,58 @@ app.post("/contests", verifyToken, verifyCreator, async (req, res) => {
     res.send(result);
 });
 
-// Stripe Payment: Create checkout session
+/**
+ * CONTEST UPDATE & DELETE (Unified for Admin & Creator)
+ */
+
+// Unified Delete: Admin can delete anything, Creator can delete only their own
+app.delete("/contests/:id", verifyToken, async (req, res) => {
+    try {
+        const id = req.params.id;
+        const decodedEmail = req.decoded.email.toLowerCase();
+        const query = { _id: new ObjectId(id) };
+        
+        const contest = await contestsCollection.findOne(query);
+        if (!contest) return res.status(404).send({ message: "Contest not found" });
+
+        const user = await usersCollection.findOne({ email: decodedEmail });
+        const isAdmin = user?.role === "admin";
+        const isOwner = contest.creatorEmail?.toLowerCase() === decodedEmail;
+
+        if (!isAdmin && !isOwner) {
+            return res.status(403).send({ message: "Unauthorized: You don't have permission to delete this." });
+        }
+
+        const result = await contestsCollection.deleteOne(query);
+        res.send(result);
+    } catch (error) {
+        res.status(500).send({ message: "Delete failed" });
+    }
+});
+
+// Creator: Update their own contest
+app.patch("/contests/:id", verifyToken, verifyCreator, async (req, res) => {
+    try {
+        const id = req.params.id;
+        const decodedEmail = req.decoded.email.toLowerCase();
+        const filter = { _id: new ObjectId(id) };
+
+        const contest = await contestsCollection.findOne(filter);
+        if (!contest) return res.status(404).send({ message: "Contest not found" });
+
+        if (contest.creatorEmail?.toLowerCase() !== decodedEmail) {
+            return res.status(403).send({ message: "You can only update your own contests" });
+        }
+
+        const updatedDoc = { $set: req.body };
+        const result = await contestsCollection.updateOne(filter, updatedDoc);
+        res.send(result);
+    } catch (error) {
+        res.status(500).send({ message: "Update failed" });
+    }
+});
+
+// Stripe Payment
 app.post("/create-payment-intent", verifyToken, async (req, res) => {
     const { contestId, contestName, price, userEmail, userName, userPhoto } = req.body;
     const existing = await participantsCollection.findOne({ contestId, userEmail });
@@ -187,6 +232,7 @@ app.post("/create-payment-intent", verifyToken, async (req, res) => {
     try {
         const session = await stripe.checkout.sessions.create({
             payment_method_types: ["card"],
+            customer_email: userEmail,
             line_items: [{
                 price_data: {
                     currency: "usd",
@@ -206,7 +252,7 @@ app.post("/create-payment-intent", verifyToken, async (req, res) => {
     }
 });
 
-// Public: Get Leaderboard
+// Public: Stats & Leaderboard
 app.get("/leaderboard", async (req, res) => {
     try {
         const winners = await participantsCollection.find({ isWinner: true }).toArray();
@@ -233,47 +279,6 @@ app.get("/leaderboard", async (req, res) => {
     }
 });
 
-// Admin: Manage all contests
-app.get("/admin/contests", verifyToken, verifyAdmin, async (req, res) => {
-    try {
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 10;
-        const total = await contestsCollection.countDocuments();
-        const contests = await contestsCollection.find().skip((page - 1) * limit).limit(limit).toArray();
-        res.send({ contests, totalPages: Math.ceil(total / limit), currentPage: page, totalContests: total });
-    } catch (error) {
-        res.status(500).send({ message: "Failed to fetch admin contests" });
-    }
-});
-
-// Admin: Update contest status (Approved/Rejected)
-app.patch("/admin/contests/:id/status", verifyToken, verifyAdmin, async (req, res) => {
-    try {
-        const id = req.params.id;
-        const { status } = req.body;
-        const result = await contestsCollection.updateOne({ _id: new ObjectId(id) }, { $set: { status: status } });
-        res.send(result);
-    } catch (error) {
-        res.status(500).send({ message: "Failed to update status" });
-    }
-});
-
-// Creator: Get contests created by specific email
-app.get("/contests/creator/:email", verifyToken, verifyCreator, async (req, res) => {
-    const result = await contestsCollection.find({ creatorEmail: req.params.email }).toArray();
-    res.send(result);
-});
-
-// Creator: Declare winner for a contest
-app.patch("/contests/:id/winner", verifyToken, verifyCreator, async (req, res) => {
-    const id = req.params.id;
-    const { winnerEmail, winnerName, winnerPhoto } = req.body;
-    await contestsCollection.updateOne({ _id: new ObjectId(id) }, { $set: { winnerEmail, winnerName, winnerPhoto, winnerDeclaredAt: new Date() } });
-    await participantsCollection.updateOne({ contestId: id, userEmail: winnerEmail }, { $set: { isWinner: true } });
-    res.send({ success: true });
-});
-
-// Public: Get Global Stats
 app.get("/stats", async (req, res) => {
     const totalContests = await contestsCollection.countDocuments({ status: "approved" });
     const totalParticipants = await participantsCollection.countDocuments();
@@ -283,19 +288,52 @@ app.get("/stats", async (req, res) => {
     res.send({ totalContests, totalParticipants, totalWinners, totalPrizeMoney: prizeResult[0]?.totalPrize || 0 });
 });
 
-// Admin: Update User Role
+// Admin: Management
+app.get("/admin/contests", verifyToken, verifyAdmin, async (req, res) => {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const total = await contestsCollection.countDocuments();
+    const contests = await contestsCollection.find().skip((page - 1) * limit).limit(limit).toArray();
+    res.send({ contests, totalPages: Math.ceil(total / limit), currentPage: page, totalContests: total });
+});
+
+app.patch("/admin/contests/:id/status", verifyToken, verifyAdmin, async (req, res) => {
+    const id = req.params.id;
+    const { status } = req.body;
+    const result = await contestsCollection.updateOne({ _id: new ObjectId(id) }, { $set: { status: status } });
+    res.send(result);
+});
+
 app.patch("/users/:id/role", verifyToken, verifyAdmin, async (req, res) => {
     const result = await usersCollection.updateOne({ _id: new ObjectId(req.params.id) }, { $set: { role: req.body.role } });
     res.send(result);
 });
 
-// Admin: Delete User
 app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
     const result = await usersCollection.deleteOne({ _id: new ObjectId(req.params.id) });
     res.send(result);
 });
 
-// Payment: Verify Stripe payment and register participant
+// Creator: Features
+app.get("/contests/creator/:email", verifyToken, verifyCreator, async (req, res) => {
+    const result = await contestsCollection.find({ creatorEmail: req.params.email }).toArray();
+    res.send(result);
+});
+
+app.patch("/contests/:id/winner", verifyToken, verifyCreator, async (req, res) => {
+    const id = req.params.id;
+    const { winnerEmail, winnerName, winnerPhoto } = req.body;
+    await contestsCollection.updateOne({ _id: new ObjectId(id) }, { $set: { winnerEmail, winnerName, winnerPhoto, winnerDeclaredAt: new Date() } });
+    await participantsCollection.updateOne({ contestId: id, userEmail: winnerEmail }, { $set: { isWinner: true } });
+    res.send({ success: true });
+});
+
+app.get("/submissions/:contestId", verifyToken, verifyCreator, async (req, res) => {
+    const result = await participantsCollection.find({ contestId: req.params.contestId, submittedTask: { $exists: true } }).toArray();
+    res.send(result);
+});
+
+// User: Features
 app.post("/verify-payment", verifyToken, async (req, res) => {
     const { sessionId } = req.body;
     try {
@@ -314,25 +352,35 @@ app.post("/verify-payment", verifyToken, async (req, res) => {
     }
 });
 
-// User: Get participation history
+// Check if user is registered for a specific contest
+app.get("/participants/check", verifyToken, async (req, res) => {
+    try {
+        const { contestId, email } = req.query;
+        const participant = await participantsCollection.findOne({ 
+            contestId: contestId, 
+            userEmail: email 
+        });
+
+        if (participant) {
+            res.send({ isRegistered: true, participant });
+        } else {
+            res.send({ isRegistered: false });
+        }
+    } catch (error) {
+        res.status(500).send({ message: "Error checking status" });
+    }
+});
+
 app.get("/participants/:email", verifyToken, async (req, res) => {
     const result = await participantsCollection.find({ userEmail: req.params.email }).sort({ createdAt: -1 }).toArray();
     res.send(result);
 });
 
-// User: Submit contest task
 app.patch("/participants/:id/submit", verifyToken, async (req, res) => {
     const result = await participantsCollection.updateOne({ _id: new ObjectId(req.params.id) }, { $set: { submittedTask: req.body.submittedTask, submittedAt: new Date() } });
     res.send(result);
 });
 
-// Creator: Get submissions for a contest
-app.get("/submissions/:contestId", verifyToken, verifyCreator, async (req, res) => {
-    const result = await participantsCollection.find({ contestId: req.params.contestId, submittedTask: { $exists: true } }).toArray();
-    res.send(result);
-});
-
-// User: Get won contests list
 app.get("/winners/:email", verifyToken, async (req, res) => {
     const winners = await participantsCollection.find({ userEmail: req.params.email, isWinner: true }).toArray();
     const result = await Promise.all(winners.map(async (winner) => {
@@ -342,23 +390,22 @@ app.get("/winners/:email", verifyToken, async (req, res) => {
     res.send(result);
 });
 
-// User: Profile Update
 app.patch("/users/:email", verifyToken, async (req, res) => {
     const result = await usersCollection.updateOne({ email: req.params.email }, { $set: req.body });
     res.send(result);
 });
 
-// User: Get Profile Details
 app.get("/users/:email", verifyToken, async (req, res) => {
     const user = await usersCollection.findOne({ email: req.params.email });
     res.send(user);
 });
 
-// User: Get Payment History
 app.get("/payments/:email", verifyToken, async (req, res) => {
     const result = await paymentsCollection.find({ userEmail: req.params.email }).sort({ paidAt: -1 }).toArray();
     res.send(result);
 });
+
+
 
 /**
  * SERVER LIFECYCLE
@@ -369,5 +416,4 @@ if (process.env.NODE_ENV !== 'production') {
     });
 }
 
-// Export for Vercel Serverless Functions
 module.exports = app;
